@@ -260,7 +260,12 @@
       {{ get_create_table_as_sql(False, new_data_relation, sql) }}
     {%- endcall %}
     {% call statement('main') -%}
-        create table {{ intermediate_relation }} as {{ existing_relation }}
+    create table {{ intermediate_relation }}
+        {% set active_cluster = adapter.get_clickhouse_cluster_name() %}
+        {%- if active_cluster is not none %}
+        ON CLUSTER {{ active_cluster }}
+        {% endif %}
+        as {{ new_data_relation }}
     {%- endcall %}
     {% call statement('insert_new_data') -%}
         insert into {{ intermediate_relation }} select * from {{ new_data_relation }}
