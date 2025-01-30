@@ -157,7 +157,13 @@
       {{ create_distributed_local_table(distributed_intermediate_relation, intermediate_relation, existing_relation) }}
     {% else %}
       {% call statement('main') %}
-          create table {{ intermediate_relation }} {{ on_cluster_clause(existing_relation) }} as {{ new_data_relation }}
+      create table {{ intermediate_relation }}
+        {% set active_cluster = adapter.get_clickhouse_cluster_name() %}
+        {%- if active_cluster is not none %}
+        ON CLUSTER {{ active_cluster }}
+        {% endif %}
+        as {{ new_data_relation }}
+        
       {% endcall %}
     {% endif %}
 
