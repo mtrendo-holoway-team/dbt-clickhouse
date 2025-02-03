@@ -225,7 +225,7 @@
   {%- set dest_cols_csv = dest_columns | map(attribute='quoted') | join(', ') -%}
 
   insert into {{ target_relation }}
-   {{ on_cluster_clause(relation)}}
+   {{ on_cluster_clause(target_relation)}}
         ({{ dest_cols_csv }})
   {%- if has_contract -%}
     -- Use a subquery to get columns in the right order
