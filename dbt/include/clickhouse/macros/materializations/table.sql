@@ -225,10 +225,6 @@
   {%- set dest_cols_csv = dest_columns | map(attribute='quoted') | join(', ') -%}
 
   insert into {{ target_relation }}
-   {% set active_cluster = adapter.get_clickhouse_cluster_name() %}
-        {%- if active_cluster is not none %}
-        ON CLUSTER {{ active_cluster }}
-        {% endif %}
         ({{ dest_cols_csv }})
   {%- if has_contract -%}
     -- Use a subquery to get columns in the right order
