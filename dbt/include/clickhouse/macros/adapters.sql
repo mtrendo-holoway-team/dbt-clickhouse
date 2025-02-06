@@ -1,12 +1,12 @@
 {% macro clickhouse__list_schemas(database) %}
-  {% call statement('list_schemas', fetch_result=True, auto_begin=False) %}
-    select name from system.databases
-  {% endcall %}
-  {{ return(load_result('list_schemas').table) }}
+    {% call statement("list_schemas", fetch_result=True, auto_begin=False) %}
+        select name from system.databases
+    {% endcall %}
+    {{ return(load_result("list_schemas").table) }}
 {% endmacro %}
 
 {% macro clickhouse__create_schema(relation) -%}
-  {%- call statement('create_schema') -%}
+    {%- call statement("create_schema") -%}
     create database if not exists {{ relation.without_identifier().include(database=False) }}
         {{ on_cluster_clause(relation)}}
         {{ adapter.clickhouse_db_engine_clause() }}
@@ -31,7 +31,7 @@
       ) as type,
       db.engine as db_engine,
       {%- if adapter.get_clickhouse_cluster_name() -%}
-        count(distinct _shard_num) > 1  as  is_on_cluster
+        count(distinct _shard_num) >= 1  as  is_on_cluster
         from clusterAllReplicas({{ adapter.get_clickhouse_cluster_name() }}, system.tables) as t
           join system.databases as db on t.database = db.name
         where schema = '{{ schema_relation.schema }}'
