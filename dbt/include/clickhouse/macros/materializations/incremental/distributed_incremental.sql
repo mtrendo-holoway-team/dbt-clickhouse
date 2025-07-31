@@ -15,7 +15,7 @@
      {% do exceptions.raise_compiler_error('To use distributed materializations cluster setting in dbt profile must be set') %}
   {% endif %}
 
-  {% set existing_relation_local = existing_relation.incorporate(path={"identifier": this.identifier + local_suffix, "schema": local_db_prefix + this.schema}) if existing_relation is not none else none %}
+  {% set existing_relation_local = load_cached_relation(this.incorporate(path={"identifier": this.identifier + local_suffix, "schema": local_db_prefix + this.schema})) %}
   {% set target_relation_local = target_relation.incorporate(path={"identifier": this.identifier + local_suffix, "schema": local_db_prefix + this.schema}) if target_relation is not none else none %}
 
   {%- set unique_key = config.get('unique_key') -%}
@@ -55,8 +55,8 @@
     {{ create_view_as(view_relation, sql) }}
   {% endcall %}
 
-  {% if existing_relation is none %}
-    -- No existing table, simply create a new one
+  {% if existing_relation_local is none %}
+    -- No existing local table, recreate local and distributed tables
     {{ create_distributed_local_table(target_relation, target_relation_local, view_relation, sql) }}
 
   {% elif full_refresh_mode %}
@@ -65,7 +65,7 @@
     {% do adapter.drop_relation(distributed_intermediate_relation) or '' %}
     {% set need_swap = true %}
 
-  {% elif inserts_only or unique_key is none -%}
+  {% elif inserts_only -%}
     -- There are no updates/deletes or duplicate keys are allowed.  Simply add all of the new rows to the existing
     -- table. It is the user's responsibility to avoid duplicates.  Note that "inserts_only" is a ClickHouse adapter
     -- specific configurable that is used to avoid creating an expensive intermediate table.
@@ -74,8 +74,15 @@
     {% endcall %}
 
   {% else %}
+    {% if existing_relation is none %}
+      {% do run_query(create_distributed_table(target_relation, target_relation_local)) %}
+      {% set existing_relation = target_relation %}
+    {% endif %}
+
     {% set incremental_strategy = adapter.calculate_incremental_strategy(config.get('incremental_strategy'))  %}
-    {% set incremental_predicates = config.get('predicates', none) or config.get('incremental_predicates', none) %}
+    {% set incremental_predicates = config.get('predicates', []) or config.get('incremental_predicates', []) %}
+    {% set partition_by = config.get('partition_by') %}
+    {% do adapter.validate_incremental_strategy(incremental_strategy, incremental_predicates, unique_key, partition_by) %}
     {%- if on_schema_change != 'ignore' %}
       {%- set local_column_changes = adapter.check_incremental_schema_changes(on_schema_change, existing_relation_local, sql) -%}
       {% if local_column_changes and incremental_strategy != 'legacy' %}
@@ -83,14 +90,13 @@
         {% set existing_relation = load_cached_relation(this) %}
       {% endif %}
     {% endif %}
-    {% if incremental_strategy != 'delete_insert' and incremental_predicates %}
-      {% do exceptions.raise_compiler_error('Cannot apply incremental predicates with ' + incremental_strategy + ' strategy.') %}
-    {% endif %}
     {% if incremental_strategy == 'legacy' %}
       {% do clickhouse__incremental_legacy(existing_relation, intermediate_relation, local_column_changes, unique_key, True) %}
       {% set need_swap = true %}
     {% elif incremental_strategy == 'delete_insert' %}
       {% do clickhouse__incremental_delete_insert(existing_relation, unique_key, incremental_predicates, True) %}
+    {% elif incremental_strategy == 'insert_overwrite' %}
+      {% do clickhouse__incremental_insert_overwrite(existing_relation, partition_by, True) %}
     {% elif incremental_strategy == 'append' %}
       {% call statement('main') %}
         {{ clickhouse__insert_into(target_relation, sql) }}
