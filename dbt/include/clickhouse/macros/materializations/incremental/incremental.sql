@@ -56,7 +56,9 @@
   {% else %}
     {% set column_changes = none %}
     {% set incremental_strategy = adapter.calculate_incremental_strategy(config.get('incremental_strategy'))  %}
-    {% set incremental_predicates = config.get('predicates', none) or config.get('incremental_predicates', none) %}
+    {% set incremental_predicates = config.get('predicates', []) or config.get('incremental_predicates', []) %}
+    {% set partition_by = config.get('partition_by') %}
+    {% do adapter.validate_incremental_strategy(incremental_strategy, incremental_predicates, unique_key, partition_by) %}
     {%- if on_schema_change != 'ignore' %}
       {%- set column_changes = adapter.check_incremental_schema_changes(on_schema_change, existing_relation, sql) -%}
       {% if column_changes and incremental_strategy != 'legacy' %}
@@ -64,27 +66,25 @@
         {% set existing_relation = load_cached_relation(this) %}
       {% endif %}
     {% endif %}
-    {% if incremental_strategy != 'delete_insert' and incremental_predicates %}
-      {% do exceptions.raise_compiler_error('Cannot apply incremental predicates with ' + incremental_strategy + ' strategy.') %}
-    {% endif %}
     {% if incremental_strategy == 'legacy' %}
       {% do clickhouse__incremental_legacy(existing_relation, intermediate_relation, column_changes, unique_key) %}
       {% set need_swap = true %}
     {% elif incremental_strategy == 'delete_insert' %}
       {% do clickhouse__incremental_delete_insert(existing_relation, unique_key, incremental_predicates) %}
+    {% elif incremental_strategy == 'microbatch' %}
+      {%- if config.get("__dbt_internal_microbatch_event_time_start") -%}
+        {% do incremental_predicates.append(config.get("event_time") ~ " >= toDateTime('" ~ config.get("__dbt_internal_microbatch_event_time_start").strftime("%Y-%m-%d %H:%M:%S") ~ "')") %}
+      {%- endif -%}
+      {%- if model.config.__dbt_internal_microbatch_event_time_end -%}
+        {% do incremental_predicates.append(config.get("event_time") ~ " < toDateTime('" ~ config.get("__dbt_internal_microbatch_event_time_end").strftime("%Y-%m-%d %H:%M:%S") ~ "')") %}
+      {%- endif -%}
+      {% do clickhouse__incremental_delete_insert(existing_relation, unique_key, incremental_predicates) %}
     {% elif incremental_strategy == 'append' %}
       {% call statement('main') %}
         {{ clickhouse__insert_into(target_relation, sql) }}
       {% endcall %}
-    {% elif incremental_strategy == 'insert_overwrite' %}#}
-      {%- set partition_by = config.get('partition_by') -%}
-      {% if partition_by is none or partition_by|length == 0 %}
-        {% do exceptions.raise_compiler_error(incremental_strategy + ' strategy requires nonempty partition_by. Current partition_by is ' ~ partition_by) %}
-      {% endif %}
-      {% if inserts_only or unique_key is not none or incremental_predicates is not none %}
-      	{% do exceptions.raise_compiler_error(incremental_strategy + ' strategy does not support inserts_only, unique_key, and incremental predicates.') %}
-      {% endif %}
-      {% do clickhouse__incremental_insert_overwrite(existing_relation, intermediate_relation, partition_by) %} %}
+    {% elif incremental_strategy == 'insert_overwrite' %}
+      {% do clickhouse__incremental_insert_overwrite(existing_relation, partition_by, False) %}
     {% endif %}
   {% endif %}
 
@@ -252,8 +252,8 @@
     {{ drop_relation_if_exists(distributed_new_data_relation) }}
 {% endmacro %}
 
-{% macro clickhouse__incremental_insert_overwrite(existing_relation, intermediate_relation, partition_by) %}
-    {% set new_data_relation = existing_relation.incorporate(path={"identifier": model['name']
+{% macro clickhouse__incremental_insert_overwrite(existing_relation, partition_by, is_distributed=False) %}
+    {% set new_data_relation = existing_relation.incorporate(path={"identifier": existing_relation.identifier
        + '__dbt_new_data_' + invocation_id.replace('-', '_')}) %}
     {{ drop_relation_if_exists(new_data_relation) }}
     {% call statement('create_new_data_temp') -%}
@@ -273,25 +273,35 @@
     {% if execute %}
       {% set select_changed_partitions %}
           SELECT DISTINCT partition_id
-          FROM system.parts
+          {% if is_distributed %}
+            FROM cluster({{ adapter.get_clickhouse_cluster_name() }}, system.parts)
+          {% else %}
+            FROM system.parts
+          {% endif %}
           WHERE active
-            AND database = '{{ intermediate_relation.schema }}'
-            AND table = '{{ intermediate_relation.identifier }}'
+            AND database = '{{ new_data_relation.schema }}'
+            AND table = '{{ new_data_relation.identifier }}'
       {% endset %}
       {% set changed_partitions = run_query(select_changed_partitions).rows %}
     {% else %}
       {% set changed_partitions = [] %}
     {% endif %}
+
     {% if changed_partitions %}
-      {% call statement('replace_partitions') %}
-          alter table {{ existing_relation }}
-          {%- for partition in changed_partitions %}
-              replace partition id '{{ partition['partition_id'] }}'
-              from {{ intermediate_relation }}
-              {{- ', ' if not loop.last }}
-          {%- endfor %}
+        {% call statement('replace_partitions') %}
+            {% if is_distributed %}
+                alter table {{ existing_local }} {{ on_cluster_clause(existing_relation) }}
+            {% else %}
+                 alter table {{ existing_relation }}
+            {% endif %}
+            {%- for partition in changed_partitions %}
+                replace partition id '{{ partition['partition_id'] }}'
+                from {{ new_data_relation }}
+                {{- ', ' if not loop.last }}
+            {%- endfor %}
       {% endcall %}
     {% endif %}
-    {% do adapter.drop_relation(intermediate_relation) %}
+
+    {% do adapter.drop_relation(distributed_new_data_relation) %}
     {% do adapter.drop_relation(new_data_relation) %}
 {% endmacro %}
