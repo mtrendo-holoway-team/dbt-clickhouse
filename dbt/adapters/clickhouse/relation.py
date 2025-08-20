@@ -99,10 +99,11 @@ class ClickHouseRelation(BaseRelation):
         database_engine: str = '',
     ) -> bool:
         # not using ternary expression for simplicity
-        if not cluster.strip() or 'replicated' in database_engine.lower():
+        if not cluster.strip():
             return False
-        else:
-            return True
+        if database_engine and 'replicated' in database_engine.lower():
+            return False
+        return True
 
     @classmethod
     def create_from(
