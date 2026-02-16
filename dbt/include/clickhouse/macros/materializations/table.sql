@@ -66,8 +66,14 @@
 
 {% endmaterialization %}
 
-{% macro engine_clause() %}
-  engine = {{ config.get('engine', default='MergeTree()') }}
+{% macro engine_clause(node=None) -%}
+  {%- set node_engine = none -%}
+  {%- if node is not none -%}
+    {%- set node_engine = (node.get('config', {}) or {}).get('engine') -%}
+  {%- endif -%}
+
+  {%- set engine = node_engine if node_engine is not none else config.get('engine', default='MergeTree()') -%}
+  engine = {{ engine }}
 {%- endmacro -%}
 
 {% macro partition_cols(label) %}
