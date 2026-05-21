@@ -22,47 +22,84 @@
 {% macro clickhouse__list_relations_without_caching(schema_relation) %}
   {% call statement('list_relations_without_caching', fetch_result=True) -%}
     with mv_sources as (
-      -- Find all MVs and their target tables (database and name of the MV, plus the SELECT SQL)
       select
-        name as mv_name,
-        database as mv_database,
-        any(as_select) as mv_sql,
-        any(replaceRegexpOne(create_table_query, '.*TO\\s+`?([^`\\s(]+)`?\\.`?([^`\\s(]+)`?.*', '\\1.\\2')) as target_fqn
-      {% if adapter.get_clickhouse_cluster_name() -%}
-      from clusterAllReplicas({{ adapter.get_clickhouse_cluster_name() }}, system.tables)
-      {% else %}
-      from system.tables
-      {% endif %}
-      where engine = 'MaterializedView'
-        and create_table_query like '%TO %'
-      group by mv_name, mv_database
+        st_name as mv_name,
+        st_database as mv_database,
+        any(st_as_select) as mv_sql,
+        any(
+          replaceRegexpOne(
+            st_create_table_query,
+            '.*TO\\s+`?([^`\\s(]+)`?\\.`?([^`\\s(]+)`?.*',
+            '\\1.\\2'
+          )
+        ) as target_fqn
+      from (
+        select
+          name as st_name,
+          database as st_database,
+          engine as st_engine,
+          as_select as st_as_select,
+          create_table_query as st_create_table_query
+        {% if adapter.get_clickhouse_cluster_name() -%}
+        from clusterAllReplicas({{ adapter.get_clickhouse_cluster_name() }}, system.tables)
+        {% else %}
+        from system.tables
+        {% endif %}
+      ) as st
+      where st_engine = 'MaterializedView'
+        and st_create_table_query like '%TO %'
+      group by
+        st_name,
+        st_database
     )
     select
-      t.name as name,
-      t.database as schema,
+      t.st_name as name,
+      t.st_database as schema,
       multiIf(
-        t.engine = 'MaterializedView', 'materialized_view',
-        t.engine = 'View', 'view',
-        t.engine = 'Dictionary', 'dictionary',
+        t.st_engine = 'MaterializedView', 'materialized_view',
+        t.st_engine = 'View', 'view',
+        t.st_engine = 'Dictionary', 'dictionary',
         'table'
       ) as type,
       db.engine as db_engine,
       groupArrayIf(
-        map('schema', mv_sources.mv_database, 'name', mv_sources.mv_name, 'sql', mv_sources.mv_sql),
+        map(
+          'schema', mv_sources.mv_database,
+          'name', mv_sources.mv_name,
+          'sql', mv_sources.mv_sql
+        ),
         mv_sources.mv_name != ''
       ) as mvs_pointing_to_it,
       {%- if adapter.get_clickhouse_cluster_name() -%}
-        count(distinct _shard_num) >= 1  as  is_on_cluster
-        from clusterAllReplicas({{ adapter.get_clickhouse_cluster_name() }}, system.tables) as t
+        count(distinct t.st_shard_num) >= 1 as is_on_cluster
+        from (
+          select
+            name as st_name,
+            database as st_database,
+            engine as st_engine,
+            _shard_num as st_shard_num
+          from clusterAllReplicas({{ adapter.get_clickhouse_cluster_name() }}, system.tables)
+        ) as t
       {%- else -%}
         0 as is_on_cluster
-        from system.tables as t
+        from (
+          select
+            name as st_name,
+            database as st_database,
+            engine as st_engine
+          from system.tables
+        ) as t
       {% endif %}
-        join system.databases as db on t.database = db.name
-        left join mv_sources on mv_sources.target_fqn = concat(t.database, '.', t.name)
-      where schema = '{{ schema_relation.schema }}'
-      group by name, schema, type, db_engine
-
+        join system.databases as db
+          on t.st_database = db.name
+        left join mv_sources
+          on mv_sources.target_fqn = concat(t.st_database, '.', t.st_name)
+      where t.st_database = '{{ schema_relation.schema }}'
+      group by
+        t.st_name,
+        t.st_database,
+        t.st_engine,
+        db.engine
   {% endcall %}
   {{ return(load_result('list_relations_without_caching').table) }}
 {% endmacro %}
