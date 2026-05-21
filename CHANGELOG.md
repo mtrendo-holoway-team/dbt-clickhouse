@@ -1,3 +1,61 @@
+### Release [1.10.1], 2026-0X-XX
+
+#### Improvements
+* Starting with this release the `dbt-clickhouse` packages will be published to PyPI using Github Actions as a [Trusted Publisher](https://docs.pypi.org/trusted-publishers/). This will improve both the usability and the security of the release process ([#614](https://github.com/ClickHouse/dbt-clickhouse/pull/614)).
+* Populate `query_id` in `AdapterResponse` for every executed query. The query ID is generated as a UUID4 and forwarded to ClickHouse, making it available via `adapter_response` in dbt artifacts and enabling tools like Elementary to correlate dbt model runs with entries in `system.query_log`.
+
+
+### Release [1.10.0], 2026-02-16
+
+This is an interesting release with many changes! Please take some time to review the notes before upgrading it. All changes are expected to be backward compatible, but some of them may require adjustments in your code.
+
+#### Changes that specially require your attention
+* Respect `catchup` in `materializataion: materialized_view` configuration flag during full refresh operations for materialized views. When `catchup: False` is set, the target table will not be backfilled with historical data during full refresh, providing consistent behavior across initial creation and redeployment scenarios ([#589](https://github.com/ClickHouse/dbt-clickhouse/pull/589)).
+* Add `select_sequential_consistency=1` setting for SharedMergeTree (`database_engine: Shared`) to ensure read-after-write consistency. Shared engine also uses stricter `mutations_sync=3` and `alter_sync=3` defaults. All connection settings now use `setdefault()` allowing users to override defaults via `custom_settings`. Those settings are expected to be safe for all dbt workloads so it's safe in production, but in specific performance critical situations you may want to override it ([#596](https://github.com/ClickHouse/dbt-clickhouse/issues/596)).
+
+#### Improvements
+* Huge new update for Materialized Views! Now you can define which target table will be used. For a full context on how to use it, check the [documentation](https://clickhouse.com/docs/integrations/dbt/materialization-materialized-view) ([#582](https://github.com/ClickHouse/dbt-clickhouse/issues/582)).
+* Add in `materializataion: dictionary` the settings update_field and update_lag, which is used in https://clickhouse.com/docs/sql-reference/dictionaries#refreshing-dictionary-data-using-lifetime and make lifetime optional ([#580](https://github.com/ClickHouse/dbt-clickhouse/pull/580)).
+* Move to declarative packaging to provide better tooling integration and build isolation (by enabling python-build) ([#593](https://github.com/ClickHouse/dbt-clickhouse/issues/593)).
+* Update `dbt-adapters` version to 1.22 ([#609](https://github.com/ClickHouse/dbt-clickhouse/issues/609)).
+
+#### Bugs
+* Fix incremental models failing with `ON CLUSTER` when the table exists on a single shard. The `can_on_cluster` flag now also considers the cluster configuration from the profile, not just the actual shard distribution ([#273](https://github.com/ClickHouse/dbt-clickhouse/issues/273)).
+* Fix issue where AWS credentials used in `s3source` were not read when defined outside the macro call:
+  * Fix for `aws_access_key_id` and `aws_secret_access_key` ([#601](https://github.com/ClickHouse/dbt-clickhouse/issues/601)).
+  * Fix for `role_arn` ([#440](https://github.com/ClickHouse/dbt-clickhouse/issues/440)).
+
+
+### Release [1.9.8], 2026-01-12
+
+#### Improvements
+* Delay the deletion of the old materialized view during full refresh execution. This ensures the old materialized view remains operational if an error occurs while the new materialized view is being backfilled ([#568](https://github.com/ClickHouse/dbt-clickhouse/pull/568)).
+* Remove internal aliases for subqueries so the `--empty` flag works when tables are used with an alias ([#487](https://github.com/ClickHouse/dbt-clickhouse/pull/487)).
+* dbt can now perform ALTER COLUMN operations to update the columns of the destination table of materialized views. By default, it will work as usual (in a `dbt run`, if the columns change, the target table will not change), but you can use the `on_schema_changes` setting to control the behavior ([#534](https://github.com/ClickHouse/dbt-clickhouse/pull/534)).
+* Bump minimum `dbt-adapters` version to 1.16.7 to fix a compatibility issue that breaks tests if an older version is installed ([#578](https://github.com/ClickHouse/dbt-clickhouse/pull/578)).
+* It is now possible to use an empty `local_suffix` configuration ([#569](https://github.com/ClickHouse/dbt-clickhouse/pull/569)).
+* Column order is now respected when using incremental materialization with contracts ([#575](https://github.com/ClickHouse/dbt-clickhouse/pull/575)).
+
+#### Repository maintenance
+* Regular maintenance tasks ([#586](https://github.com/ClickHouse/dbt-clickhouse/pull/586))
+  * Update Python versions used for testing: drop 3.9 support, add 3.13.
+  * Update ClickHouse versions used for testing: drop 25.7, add 25.8, 25.10, 25.11, 25.12 and head.
+  * Update linting libraries versions.
+
+
+### Release [1.9.7], 2025-12-03
+
+#### New Features
+* Add `clickhouse__safe_cast` macro that automatically provides default values for ClickHouse types when casting null values. This eliminates the need to specify all non-nullable columns in unit test fixtures ([#552](https://github.com/ClickHouse/dbt-clickhouse/pull/552)).
+
+#### Improvements
+* We are now officially supporting dbt-core 1.10!
+  * Validate that the new `--sample` flag ([docs](https://docs.getdbt.com/docs/build/sample-flag)) works. Add tests to cover the implementation ([#570](https://github.com/ClickHouse/dbt-clickhouse/pull/570)).
+  * We have validated that the code doesn't raise warnings related to deprecations for future dbt versions
+  * Change tests to use dbt-core 1.10 to start validating new functionality ([#570](https://github.com/ClickHouse/dbt-clickhouse/pull/570)).
+  * dbt Catalogs feature is not supported right now, but workarounds are going to be documented.
+
+
 ### Release [1.9.6], 2025-11-03
 
 #### Bugs

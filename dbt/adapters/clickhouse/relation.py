@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Any, Optional, Type
+from typing import Any, Dict, List, Optional, Type
 
 from dbt.adapters.base.relation import BaseRelation, EventTimeFilter, Path, Policy, Self
 from dbt.adapters.clickhouse.query import quote_identifier
@@ -43,7 +43,11 @@ class ClickHouseRelation(BaseRelation):
     quote_character: str = '`'
     can_exchange: bool = False
     can_on_cluster: bool = False
+    require_alias: bool = False
     is_temporary: bool = False
+    mvs_pointing_to_it: List[Dict[str, str]] = field(
+        default_factory=list
+    )  # List of {'schema', 'name', 'sql'}
 
     def __post_init__(self):
         if self.database != self.schema and self.database:

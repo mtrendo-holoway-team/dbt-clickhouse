@@ -9,15 +9,10 @@ import pytest
 from dbt.adapters.clickhouse.query import quote_identifier
 from dbt.tests.util import check_relation_types, run_dbt
 
-PEOPLE_SEED_CSV = """
-id,name,age,department
-1231,Dade,33,engineering
-6666,Ksenia,48,engineering
-8888,Kate,50,engineering
-1000,Alfie,10,sales
-2000,Bill,20,sales
-3000,Charlie,30,sales
-""".lstrip()
+from tests.integration.adapter.materialized_view.common import (
+    PEOPLE_SEED_CSV,
+    SEED_SCHEMA_YML,
+)
 
 # This model is parameterized, in a way, by the "run_type" dbt project variable
 # This is to be able to switch between different model definitions within
@@ -28,6 +23,7 @@ MULTIPLE_MV_MODEL = """
        materialized='materialized_view',
        engine='MergeTree()',
        order_by='(id)',
+       on_schema_change=var('on_schema_change', 'ignore'),
        schema='custom_schema_for_multiple_mv',
 ) }}
 
@@ -70,7 +66,8 @@ select
         when name like 'Dade' and age != 11 then 'crash override'
         when name like 'Kate' then 'acid burn'
         else 'N/A'
-    end as hacker_alias
+    end as hacker_alias,
+    id as id2 
 from {{ source('raw', 'people') }}
 where department = 'engineering'
 --mv1:end
@@ -82,23 +79,13 @@ select
     id,
     name,
     -- sales people are not cool enough to have a hacker alias
-    'N/A' as hacker_alias
+    'N/A' as hacker_alias,
+    id as id2
 from {{ source('raw', 'people') }}
 where department = 'sales'
 --mv2:end
 
 {% endif %}
-"""
-
-
-SEED_SCHEMA_YML = """
-version: 2
-
-sources:
-  - name: raw
-    schema: "{{ target.schema }}"
-    tables:
-      - name: people
 """
 
 
@@ -150,7 +137,7 @@ class TestMultipleMV:
         check_relation_types(
             project.adapter,
             {
-                "hackers_mv": "view",
+                "hackers_mv": "materialized_view",
                 "hackers": "table",
             },
         )
@@ -218,6 +205,62 @@ class TestUpdateMultipleMV:
         assert len(result) == 2
         assert result[0][0] == "crash_override"
         assert result[1][0] == "zero cool"
+
+        # As 'on_schema_change' is not defined, the new `id2` column will not be created in the destination table
+        table_description_after_update = project.run_sql(
+            f"DESCRIBE TABLE {schema}.hackers", fetch="all"
+        )
+        assert not any(col[0] == "id2" for col in table_description_after_update)
+
+    # Test to verify that updates to multiple MVs also updates the destination table
+    def test_update_incremental_on_schema_change_sync_all_columns(self, project):
+        schema = quote_identifier(project.test_schema + "_custom_schema_for_multiple_mv")
+        # create our initial materialized view
+        run_dbt(["seed"])
+        run_dbt()
+
+        # re-run dbt but this time with the new MV SQL
+        run_vars = {"run_type": "extended_schema", "on_schema_change": "sync_all_columns"}
+        run_dbt(["run", "--vars", json.dumps(run_vars)])
+
+        project.run_sql(
+            f"""
+        insert into {quote_identifier(project.test_schema)}.people ("id", "name", "age", "department")
+            values (1232,'Dade',11,'engineering'), (9999,'eugene',40,'malware');
+        """
+        )
+
+        # assert that the destination table is updated with the new column
+        table_description_after_update = project.run_sql(f"DESCRIBE {schema}.hackers", fetch="all")
+        assert any(col[0] == "id2" and col[1] == "Int32" for col in table_description_after_update)
+
+        # run again without extended schema, to make sure table is updated back without the id2 column
+        run_dbt(["run", "--vars", json.dumps({"on_schema_change": "sync_all_columns"})])
+        table_description_after_revert_update = project.run_sql(
+            f"DESCRIBE TABLE {schema}.hackers", fetch="all"
+        )
+        assert not any(col[0] == "id2" for col in table_description_after_revert_update)
+
+    def test_update_on_schema_change_fail(self, project):
+        schema = quote_identifier(project.test_schema + "_custom_schema_for_multiple_mv")
+        # create our initial materialized view
+        run_dbt(["seed"])
+        run_dbt()
+
+        # re-run dbt but this time with the new MV SQL
+        run_vars = {"run_type": "extended_schema", "on_schema_change": "fail"}
+        results = run_dbt(["run", "--vars", json.dumps(run_vars)], expect_pass=False)
+
+        result = next(r for r in results if r.status == "error")
+
+        expected_messages = [
+            'The source and target schemas on this materialized view model are out of sync',
+            'Source columns not in target: []',
+            "Target columns not in source: ['id2 Int32']",
+            'New column types: []',
+        ]
+        for msg in expected_messages:
+            assert msg in result.message
 
     def test_update_full_refresh(self, project):
         schema = quote_identifier(project.test_schema + "_custom_schema_for_multiple_mv")

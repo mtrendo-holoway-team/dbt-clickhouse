@@ -14,6 +14,10 @@ jobs:
     name: PyPI Release
     runs-on: ubuntu-latest
 
+    permissions:
+      # IMPORTANT: this permission is mandatory for Trusted Publishing
+      id-token: write
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,14 +27,11 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Upgrade Setuptools
-        run: pip install --upgrade setuptools wheel
+      - name: Install build dependencies
+        run: pip install --upgrade pip build
 
       - name: Build Distribution
-        run: python setup.py sdist bdist_wheel --universal
+        run: python -m build
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          user: __token__
-          password: ${{ secrets.pypi_password }}
